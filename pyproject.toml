@@ -1,0 +1,11 @@
+[project]
+name = "agent-orchestration-and-tool-calling"
+version = "0.1.0"
+description = "A dependency-free framework for agent orchestration and tool calling"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["agent", "orchestration", "tools", "framework"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
