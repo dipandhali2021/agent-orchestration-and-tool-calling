@@ -1,5 +1,7 @@
 """Tests for agent_orchestration_and_tool_calling."""
 
+from typing import Optional
+
 import pytest
 from agent_orchestration_and_tool_calling import (
     Tool,
@@ -81,6 +83,99 @@ def test_tool_repr():
     tool = Tool(name="test_tool", description="A test", fn=lambda: None)
     r = repr(tool)
     assert "test_tool" in r
+
+
+# --- Schema validation tests ---
+
+
+def test_auto_schema_int_type():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    tool = Tool(name="add", description="Add", fn=add)
+    assert tool.parameters["properties"]["a"]["type"] == "integer"
+    assert tool.parameters["properties"]["b"]["type"] == "integer"
+
+
+def test_auto_schema_float_type():
+    def div(a: float, b: float) -> float:
+        return a / b
+
+    tool = Tool(name="div", description="Div", fn=div)
+    assert tool.parameters["properties"]["a"]["type"] == "number"
+
+
+def test_auto_schema_bool_type():
+    def check(flag: bool) -> bool:
+        return flag
+
+    tool = Tool(name="check", description="Check", fn=check)
+    assert tool.parameters["properties"]["flag"]["type"] == "boolean"
+
+
+def test_auto_schema_optional_param():
+    def greet(name: str, greeting: Optional[str] = None) -> str:
+        return f"{greeting or 'Hello'}, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    assert "greeting" not in tool.parameters["required"]
+    assert tool.parameters["properties"]["greeting"].get("nullable") is True
+
+
+def test_auto_schema_default_value():
+    def repeat(msg: str, times: int = 1) -> str:
+        return msg * times
+
+    tool = Tool(name="repeat", description="Repeat", fn=repeat)
+    assert tool.parameters["properties"]["times"]["default"] == 1
+    assert "times" not in tool.parameters["required"]
+
+
+def test_auto_schema_required_params():
+    def cmd(name: str, action: str = "run") -> str:
+        return f"{name}:{action}"
+
+    tool = Tool(name="cmd", description="Cmd", fn=cmd)
+    assert "name" in tool.parameters["required"]
+    assert "action" not in tool.parameters["required"]
+
+
+# --- Execution error handling tests ---
+
+
+def test_tool_invoke_missing_argument():
+    def greet(name: str) -> str:
+        return f"Hello, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    result = tool.invoke()
+    assert not result.success
+    assert result.error is not None
+    assert "missing" in result.error.lower()
+
+
+def test_tool_invoke_unexpected_kwarg():
+    def greet(name: str) -> str:
+        return f"Hello, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    result = tool.invoke(name="Alice", extra="x")
+    assert not result.success
+    assert result.error is not None
+    assert any(
+        w in result.error.lower()
+        for w in ["unexpected", "unexpected keyword argument"]
+    )
+
+
+def test_tool_invoke_type_error():
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    tool = Tool(name="add", description="Add", fn=add)
+    result = tool.invoke(a="not_a_number", b=2)
+    assert not result.success
+    assert result.error is not None
 
 
 # --- ToolResult tests ---
@@ -168,6 +263,37 @@ def test_agent_to_dict():
 def test_agent_repr():
     agent = Agent(name="test", instructions="")
     assert "test" in repr(agent)
+
+
+# --- Tool registration tests ---
+
+
+def test_agent_register_tool_twice():
+    """Agent preserves both tools when the same name is added twice."""
+    agent = Agent(name="test", instructions="")
+    t1 = Tool(name="echo", description="First", fn=lambda: 1)
+    t2 = Tool(name="echo", description="Second", fn=lambda: 2)
+    agent.add_tool(t1)
+    agent.add_tool(t2)
+    assert len(agent.tools) == 2
+    # get_tool returns first match via sequential search
+    assert agent.get_tool("echo") is t1
+
+
+def test_agent_register_multiple_tools():
+    agent = Agent(name="test", instructions="")
+    tools = [Tool(name=f"t{i}", description=str(i), fn=lambda i=i: i) for i in range(5)]
+    for t in tools:
+        agent.add_tool(t)
+    assert len(agent.tools) == 5
+    for t in tools:
+        assert agent.has_tool(t.name)
+
+
+def test_agent_register_no_tools():
+    agent = Agent(name="empty", instructions="")
+    assert agent.tools == []
+    assert agent.get_tool("anything") is None
 
 
 # --- RouteRule tests ---
