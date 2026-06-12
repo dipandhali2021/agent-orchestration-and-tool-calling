@@ -24,6 +24,10 @@ __all__ = [
     "Agent",
     "RouteRule",
     "Orchestrator",
+    "ToolRegistry",
+    "registry",
+    "tool",
+    "validate_args",
 ]
 
 
@@ -104,6 +108,26 @@ def _infer_parameters(fn: Callable) -> dict:
     }
 
 
+def validate_args(schema: dict, kwargs: dict) -> Optional[str]:
+    """Validate keyword arguments against a JSON Schema parameter definition.
+
+    Returns an error message if validation fails, or None if valid.
+    """
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    for param in required:
+        if param not in kwargs:
+            return f"Missing required argument: {param!r}"
+
+    allowed = set(properties.keys())
+    for key in kwargs:
+        if key not in allowed:
+            return f"Unexpected argument: {key!r}"
+
+    return None
+
+
 class ToolCall:
     """Represents a request to invoke a specific tool."""
 
@@ -169,6 +193,9 @@ class Tool:
 
     def invoke(self, **kwargs: Any) -> ToolResult:
         """Execute the tool with the given keyword arguments."""
+        error = validate_args(self.parameters, kwargs)
+        if error:
+            return ToolResult(tool_name=self.name, error=error)
         try:
             output = self.fn(**kwargs)
             return ToolResult(tool_name=self.name, output=output)
@@ -330,3 +357,68 @@ class Orchestrator:
             f"Orchestrator(agents={len(self._agents)}, "
             f"rules={len(self._rules)})"
         )
+
+
+class ToolRegistry:
+    """A central registry for tools with registration, lookup, and invocation."""
+
+    def __init__(self) -> None:
+        self._tools: dict[str, Tool] = {}
+
+    def register(self, tool: Tool) -> None:
+        """Register a tool by name."""
+        self._tools[tool.name] = tool
+
+    def get(self, name: str) -> Optional[Tool]:
+        """Look up a registered tool by name."""
+        return self._tools.get(name)
+
+    def list(self) -> list[Tool]:
+        """Return all registered tools."""
+        return list(self._tools.values())
+
+    def invoke(self, tool_name: str, **kwargs: Any) -> ToolResult:
+        """Look up a tool by name and invoke it with the given arguments."""
+        tool = self.get(tool_name)
+        if tool is None:
+            return ToolResult(
+                tool_name=tool_name,
+                error=f"Unknown tool: {tool_name!r}",
+            )
+        return tool.invoke(**kwargs)
+
+    def __repr__(self) -> str:
+        return f"ToolRegistry(tools={list(self._tools.keys())})"
+
+
+# Global default registry.
+registry = ToolRegistry()
+
+
+def tool(
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Callable[[Callable], Tool]:
+    """Decorator that wraps a function into a Tool and registers it globally.
+
+    Usage::
+
+        @tool()
+        def my_func(arg1: str, arg2: int) -> str:
+            \"\"\"Description.\"\"\"
+            ...
+
+        @tool(name="custom_name", description="Custom description")
+        def another() -> None:
+            ...
+    """
+    def decorator(fn: Callable) -> Tool:
+        t = Tool(
+            name=name or fn.__name__,
+            description=description or fn.__doc__ or "",
+            fn=fn,
+        )
+        registry.register(t)
+        return t
+
+    return decorator

@@ -5,6 +5,10 @@ from .core import (
     Agent,
     RouteRule,
     Orchestrator,
+    ToolRegistry,
+    registry,
+    tool,
+    validate_args,
 )
 
 __all__ = [
@@ -14,4 +18,8 @@ __all__ = [
     "Agent",
     "RouteRule",
     "Orchestrator",
+    "ToolRegistry",
+    "registry",
+    "tool",
+    "validate_args",
 ]
