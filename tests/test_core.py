@@ -11,6 +11,7 @@ from agent_orchestration_and_tool_calling import (
     RouteRule,
     Orchestrator,
 )
+from agent_orchestration_and_tool_calling.core import AgentLoop
 
 
 # --- Tool tests ---
@@ -446,3 +447,188 @@ def test_orchestrator_repr():
     orch = Orchestrator(agents=[agent])
     r = repr(orch)
     assert "Orchestrator" in r
+
+
+# --- AgentLoop orchestration loop tests ---
+
+
+def test_agentloop_creation():
+    """AgentLoop can be created with an orchestrator."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch)
+    assert loop.orchestrator is orch
+    assert loop.state == {}
+
+
+def test_agentloop_creation_with_initial_state():
+    """AgentLoop accepts an initial state dict."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch, initial_state={"foo": "bar"})
+    assert loop.state == {"foo": "bar"}
+
+
+def test_agentloop_state_snapshot():
+    """state property returns a copy, not the internal dict."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch)
+    s = loop.state
+    s["injected"] = "value"
+    assert loop.state == {}
+
+    # Multiple calls return independent copies
+    s1 = loop.state
+    s2 = loop.state
+    assert s1 is not s2
+
+
+def test_agentloop_step_single_call():
+    """A single tool call is executed and its result returned."""
+    def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    agent = Agent(name="helper", instructions="Help", tools=[tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step([ToolCall("greet", {"name": "Alice"})])
+    assert len(results) == 1
+    assert results[0].success
+    assert results[0].output == "Hello, Alice!"
+
+
+def test_agentloop_step_multiple_calls():
+    """Multiple tool calls in a single step are all executed."""
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    def mul(a: int, b: int) -> int:
+        return a * b
+
+    add_tool = Tool(name="add", description="Add", fn=add)
+    mul_tool = Tool(name="mul", description="Multiply", fn=mul)
+    agent = Agent(name="calc", instructions="Calc", tools=[add_tool, mul_tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step([
+        ToolCall("add", {"a": 2, "b": 3}),
+        ToolCall("mul", {"a": 4, "b": 5}),
+    ])
+    assert len(results) == 2
+    assert results[0].output == 5
+    assert results[1].output == 20
+
+
+def test_agentloop_state_transition():
+    """After a step, results are stored in loop state keyed by tool name."""
+    def greet(name: str) -> str:
+        return f"Hi, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    agent = Agent(name="helper", instructions="Help", tools=[tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    loop.step([ToolCall("greet", {"name": "Bob"})])
+    assert loop.state["greet"] == "Hi, Bob"
+
+
+def test_agentloop_tool_result_injection():
+    """Successful tool outputs and failed error messages are both stored in state."""
+    def succeed(x: int) -> int:
+        return x * 2
+
+    success_tool = Tool(name="success", description="", fn=succeed)
+    agent = Agent(name="worker", instructions="", tools=[success_tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    # Successful call
+    loop.step([ToolCall("success", {"x": 7})])
+    assert loop.state["success"] == 14
+
+    # Failed call (no agent has this tool)
+    loop.step([ToolCall("unknown", {})])
+    assert isinstance(loop.state["unknown"], str)
+    assert "unknown" in loop.state["unknown"]
+
+
+def test_agentloop_multi_step_accumulation():
+    """State accumulates across multiple steps (multi-step tool calling)."""
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    def mul(a: int, b: int) -> int:
+        return a * b
+
+    add_tool = Tool(name="add", description="Add", fn=add)
+    mul_tool = Tool(name="mul", description="Multiply", fn=mul)
+    agent = Agent(name="calc", instructions="Calc", tools=[add_tool, mul_tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    # Step 1: add
+    loop.step([ToolCall("add", {"a": 2, "b": 3})])
+    assert loop.state["add"] == 5
+
+    # Step 2: multiply using the result from step 1
+    loop.step([ToolCall("mul", {"a": loop.state["add"], "b": 10})])
+    assert loop.state["mul"] == 50
+
+    # Both keys present after accumulation
+    assert set(loop.state.keys()) == {"add", "mul"}
+
+
+def test_agentloop_step_unknown_tool():
+    """When no agent has the requested tool, an error result is returned."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch)
+    results = loop.step([ToolCall("nonexistent", {})])
+    assert len(results) == 1
+    assert not results[0].success
+    assert results[0].error is not None
+    assert "nonexistent" in results[0].error
+
+
+def test_agentloop_step_with_agent_name():
+    """When agent_name is given, only that agent is searched for tools."""
+    def greet(name: str) -> str:
+        return f"Hello, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    agent = Agent(name="helper", instructions="Help", tools=[tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step(
+        [ToolCall("greet", {"name": "Alice"})], agent_name="helper"
+    )
+    assert len(results) == 1
+    assert results[0].success
+    assert results[0].output == "Hello, Alice"
+
+
+def test_agentloop_step_wrong_agent_name():
+    """When agent_name doesn't match an agent, tool lookup fails."""
+    def greet(name: str) -> str:
+        return f"Hello, {name}"
+
+    tool = Tool(name="greet", description="Greet", fn=greet)
+    agent = Agent(name="helper", instructions="Help", tools=[tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step(
+        [ToolCall("greet", {"name": "Alice"})], agent_name="other"
+    )
+    assert len(results) == 1
+    assert not results[0].success
+
+
+def test_agentloop_repr():
+    """AgentLoop repr includes class name and state keys."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch)
+    r = repr(loop)
+    assert "AgentLoop" in r
