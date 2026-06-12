@@ -24,6 +24,7 @@ __all__ = [
     "Agent",
     "RouteRule",
     "Orchestrator",
+    "AgentLoop",
     "ToolRegistry",
     "registry",
     "tool",
@@ -422,3 +423,86 @@ def tool(
         return t
 
     return decorator
+
+
+class AgentLoop:
+    """Core agent orchestration loop that manages state, processes tool calls,
+    and feeds results back into the state across steps.
+
+    Usage::
+
+        loop = AgentLoop(orchestrator)
+        step1_results = loop.step([ToolCall("search", {"q": "weather"})])
+        # Results are stored in loop.state, available for subsequent steps
+        step2_results = loop.step([ToolCall("format", {"data": loop.state["search"]})])
+    """
+
+    def __init__(
+        self,
+        orchestrator: Orchestrator,
+        initial_state: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self._orchestrator = orchestrator
+        self._state: dict[str, Any] = dict(initial_state or {})
+
+    @property
+    def orchestrator(self) -> Orchestrator:
+        """Return the wrapped orchestrator."""
+        return self._orchestrator
+
+    @property
+    def state(self) -> dict[str, Any]:
+        """Return a snapshot of the current loop state."""
+        return dict(self._state)
+
+    def step(
+        self,
+        tool_calls: list[ToolCall],
+        agent_name: Optional[str] = None,
+    ) -> list[ToolResult]:
+        """Execute one iteration of the orchestration loop.
+
+        Processes a batch of tool calls, executes each on the first agent
+        that has the named tool registered, and stores results in the
+        shared loop state keyed by tool name.
+
+        When *agent_name* is provided, only that agent is searched.
+        When omitted, all registered agents are searched in order.
+        """
+        results: list[ToolResult] = []
+
+        candidates: list[Optional[Agent]]
+        if agent_name is not None:
+            candidates = [self._orchestrator.get_agent(agent_name)]
+        else:
+            candidates = list(self._orchestrator.agents)
+
+        for tc in tool_calls:
+            result: Optional[ToolResult] = None
+            for agent in candidates:
+                if agent is not None and agent.has_tool(tc.tool_name):
+                    result = self._orchestrator.call_tool(
+                        agent.name, tc.tool_name, **tc.arguments
+                    )
+                    break
+
+            if result is None:
+                result = ToolResult(
+                    tool_name=tc.tool_name,
+                    error=f"No agent found with tool: {tc.tool_name!r}",
+                )
+
+            results.append(result)
+
+            # Feed result into state
+            self._state[tc.tool_name] = (
+                result.output if result.success else result.error
+            )
+
+        return results
+
+    def __repr__(self) -> str:
+        return (
+            f"AgentLoop(orchestrator={self._orchestrator!r}, "
+            f"state_keys={list(self._state.keys())})"
+        )
