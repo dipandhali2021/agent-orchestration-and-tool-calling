@@ -632,3 +632,79 @@ def test_agentloop_repr():
     loop = AgentLoop(orch)
     r = repr(loop)
     assert "AgentLoop" in r
+
+
+def test_agentloop_step_empty_calls():
+    """An empty tool call list returns empty results and leaves state unchanged."""
+    orch = Orchestrator()
+    loop = AgentLoop(orch, initial_state={"existing": "value"})
+    results = loop.step([])
+    assert results == []
+    assert loop.state == {"existing": "value"}
+
+
+def test_agentloop_state_overwrite_same_tool():
+    """Calling the same tool across consecutive steps overwrites state with the latest result."""
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    tool_obj = Tool(name="add", description="Add", fn=add)
+    agent = Agent(name="calc", instructions="Calc", tools=[tool_obj])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    loop.step([ToolCall("add", {"a": 1, "b": 2})])
+    assert loop.state["add"] == 3
+
+    loop.step([ToolCall("add", {"a": 10, "b": 20})])
+    assert loop.state["add"] == 30
+
+
+def test_agentloop_same_tool_twice_in_one_step():
+    """When the same tool is called twice in one step, both execute and state holds the last result."""
+    def append_val(val: str) -> str:
+        return f"processed:{val}"
+
+    tool_obj = Tool(name="proc", description="Proc", fn=append_val)
+    agent = Agent(name="worker", instructions="Work", tools=[tool_obj])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step([
+        ToolCall("proc", {"val": "first"}),
+        ToolCall("proc", {"val": "second"}),
+    ])
+    assert len(results) == 2
+    assert results[0].success and results[0].output == "processed:first"
+    assert results[1].success and results[1].output == "processed:second"
+    # State holds the *last* result (tool name is the key — second overwrites first)
+    assert loop.state["proc"] == "processed:second"
+
+
+def test_agentloop_mixed_success_failure_in_step():
+    """A single step with both successful and failed tool calls returns mixed results."""
+    def succeed(x: int) -> int:
+        return x * 2
+
+    good_tool = Tool(name="good", description="Good", fn=succeed)
+    agent = Agent(name="worker", instructions="", tools=[good_tool])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step([
+        ToolCall("good", {"x": 5}),
+        ToolCall("missing", {}),
+        ToolCall("good", {"x": 3}),
+    ])
+    assert len(results) == 3
+    assert results[0].success
+    assert results[0].output == 10
+    assert not results[1].success
+    assert results[1].error is not None
+    assert "missing" in results[1].error
+    assert results[2].success
+    assert results[2].output == 6
+
+    # State reflects the last result for each tool name
+    assert loop.state["good"] == 6
+    assert isinstance(loop.state["missing"], str)
