@@ -708,3 +708,26 @@ def test_agentloop_mixed_success_failure_in_step():
     # State reflects the last result for each tool name
     assert loop.state["good"] == 6
     assert isinstance(loop.state["missing"], str)
+
+
+def test_agentloop_tool_exception_stored_in_state():
+    """When a tool raises an exception during invocation, the error is stored in state."""
+    def failing_tool() -> None:
+        raise ValueError("something went wrong")
+
+    tool_obj = Tool(
+        name="failing", description="Always fails", fn=failing_tool
+    )
+    agent = Agent(name="worker", instructions="", tools=[tool_obj])
+    orch = Orchestrator(agents=[agent])
+    loop = AgentLoop(orch)
+
+    results = loop.step([ToolCall("failing", {})])
+    assert len(results) == 1
+    assert not results[0].success
+    assert results[0].error is not None
+    assert "something went wrong" in results[0].error
+
+    # The error message is injected into loop state
+    assert isinstance(loop.state["failing"], str)
+    assert "something went wrong" in loop.state["failing"]
