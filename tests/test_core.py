@@ -731,3 +731,58 @@ def test_agentloop_tool_exception_stored_in_state():
     # The error message is injected into loop state
     assert isinstance(loop.state["failing"], str)
     assert "something went wrong" in loop.state["failing"]
+
+
+def test_agentloop_cross_agent_orchestration():
+    """When no agent_name is given, step searches all agents for the tool."""
+    def capitalize(s: str) -> str:
+        return s.upper()
+
+    def reverse(s: str) -> str:
+        return s[::-1]
+
+    agent_a = Agent(
+        name="capitalizer",
+        instructions="Capitalize text",
+        tools=[Tool(name="cap", description="Capitalize", fn=capitalize)],
+    )
+    agent_b = Agent(
+        name="reverser",
+        instructions="Reverse text",
+        tools=[Tool(name="rev", description="Reverse", fn=reverse)],
+    )
+    orch = Orchestrator(agents=[agent_a, agent_b])
+    loop = AgentLoop(orch)
+
+    # Tool found on agent_a (capitalizer)
+    results = loop.step([ToolCall("cap", {"s": "hello"})])
+    assert results[0].success
+    assert results[0].output == "HELLO"
+
+    # Tool found on agent_b (reverser) — cross-agent dispatch
+    results = loop.step([ToolCall("rev", {"s": "hello"})])
+    assert results[0].success
+    assert results[0].output == "olleh"
+
+    # State has results from both agents
+    assert loop.state["cap"] == "HELLO"
+    assert loop.state["rev"] == "olleh"
+
+
+def test_agentloop_state_isolation():
+    """Two AgentLoop instances sharing the same orchestrator have independent state."""
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    tool_obj = Tool(name="add", description="Add", fn=add)
+    agent = Agent(name="calc", instructions="Calculator", tools=[tool_obj])
+    orch = Orchestrator(agents=[agent])
+
+    loop1 = AgentLoop(orch)
+    loop2 = AgentLoop(orch, initial_state={"seed": 100})
+
+    loop1.step([ToolCall("add", {"a": 1, "b": 2})])
+    loop2.step([ToolCall("add", {"a": 3, "b": 4})])
+
+    assert loop1.state == {"add": 3}
+    assert loop2.state == {"seed": 100, "add": 7}
